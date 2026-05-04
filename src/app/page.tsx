@@ -3,7 +3,7 @@ import TestTonePlayer from "../../components/TestTonePlayer";
 export default function Home() {
   return (
     <main className="min-h-screen bg-slate-100 px-4 py-8 text-slate-950 sm:px-6 lg:px-8">
-      <TestTonePlayer />
+      <TestTonePlayer defaultAudioUrl={process.env.NEXT_PUBLIC_DEFAULT_AUDIO_URL} />
     </main>
   );
 }

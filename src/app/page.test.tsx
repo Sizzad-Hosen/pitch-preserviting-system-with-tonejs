@@ -3,7 +3,17 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Home from "./page";
 
-type AudioEventName = "ended" | "error" | "loadedmetadata" | "timeupdate";
+type AudioEventName =
+  | "canplay"
+  | "ended"
+  | "error"
+  | "loadedmetadata"
+  | "pause"
+  | "playing"
+  | "seeked"
+  | "seeking"
+  | "timeupdate"
+  | "waiting";
 
 function createMockAudio() {
   const listeners = new Map<AudioEventName, Set<() => void>>();
@@ -12,10 +22,12 @@ function createMockAudio() {
     crossOrigin: "",
     currentTime: 0,
     duration: 125,
+    paused: true,
     playbackRate: 1,
     preload: "",
     preservesPitch: true,
     src: "",
+    volume: 1,
     addEventListener: vi.fn((event: AudioEventName, listener: () => void) => {
       if (!listeners.has(event)) listeners.set(event, new Set());
       listeners.get(event)?.add(listener);
@@ -26,8 +38,15 @@ function createMockAudio() {
     load: vi.fn(() => {
       queueMicrotask(() => audio.dispatch("loadedmetadata"));
     }),
-    pause: vi.fn(),
-    play: vi.fn(() => Promise.resolve()),
+    pause: vi.fn(() => {
+      audio.paused = true;
+      audio.dispatch("pause");
+    }),
+    play: vi.fn(() => {
+      audio.paused = false;
+      audio.dispatch("playing");
+      return Promise.resolve();
+    }),
     removeAttribute: vi.fn((attribute: string) => {
       if (attribute === "src") audio.src = "";
     }),
@@ -195,5 +214,26 @@ describe("Home Tone.js test player", () => {
 
     expect(screen.getByText("+4 semitones")).toBeInTheDocument();
     expect(mockPitchShift.pitch).toBe(4);
+  });
+
+  it("supports relative same-origin server audio paths and volume control", async () => {
+    const user = userEvent.setup();
+    render(<Home />);
+
+    await screen.findByText("Ready");
+
+    await user.clear(screen.getByLabelText(/audio url/i));
+    await user.type(screen.getByLabelText(/audio url/i), "/audio/song.mp3");
+    await user.click(screen.getByRole("button", { name: /load url/i }));
+
+    expect(mockAudio.src).toBe("/audio/song.mp3");
+    expect(await screen.findByDisplayValue("/audio/song.mp3")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/volume/i), {
+      target: { value: "0.4" },
+    });
+
+    expect(mockAudio.volume).toBe(0.4);
+    expect(screen.getByText("40%")).toBeInTheDocument();
   });
 });

@@ -4,20 +4,29 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import * as Tone from "tone";
 
 const DEFAULT_AUDIO_URL =
+  process.env.NEXT_PUBLIC_DEFAULT_AUDIO_URL ||
   "https://cdn.jsdelivr.net/gh/mdn/webaudio-examples/audio-basics/outfoxing.mp3";
 
-const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5, 2] as const;
+const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 const MIN_PITCH = -4;
 const MAX_PITCH = 4;
+const DEFAULT_VOLUME = 1;
 
-type LoadState = "loading" | "ready" | "error";
+type LoadState = "idle" | "loading" | "ready" | "buffering" | "error";
+
+type TestTonePlayerProps = {
+  defaultAudioUrl?: string;
+};
 
 function normalizeAudioUrl(input: string) {
   const trimmedUrl = input.trim();
-  const parsedUrl = new URL(trimmedUrl);
+  const parsedUrl = new URL(trimmedUrl, window.location.origin);
 
-  if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-    throw new Error("Use a valid http or https audio URL.");
+  if (
+    !["http:", "https:"].includes(parsedUrl.protocol) ||
+    parsedUrl.origin === "null"
+  ) {
+    throw new Error("Use a valid audio URL.");
   }
 
   const [, owner, repo, marker, branch, ...filePath] =
@@ -34,7 +43,11 @@ function normalizeAudioUrl(input: string) {
     return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath.join("/")}`;
   }
 
-  return trimmedUrl;
+  if (parsedUrl.origin === window.location.origin && trimmedUrl.startsWith("/")) {
+    return `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`;
+  }
+
+  return parsedUrl.href;
 }
 
 function setPreservesPitch(audio: HTMLAudioElement, enabled: boolean) {
@@ -49,18 +62,46 @@ function setPreservesPitch(audio: HTMLAudioElement, enabled: boolean) {
   audioWithVendorFlags.webkitPreservesPitch = enabled;
 }
 
-export default function TestTonePlayer() {
+function getMediaErrorMessage(error: MediaError | null) {
+  if (!error) {
+    return "Audio failed to load. Use a direct MP3/WAV URL with CORS enabled.";
+  }
+
+  if (error.code === MediaError.MEDIA_ERR_ABORTED) {
+    return "Audio loading was aborted.";
+  }
+
+  if (error.code === MediaError.MEDIA_ERR_NETWORK) {
+    return "Network error while loading audio. Check the server URL and CORS.";
+  }
+
+  if (error.code === MediaError.MEDIA_ERR_DECODE) {
+    return "The browser could not decode this audio file.";
+  }
+
+  if (error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+    return "This URL is not a supported direct audio file.";
+  }
+
+  return "Audio failed to load. Use a direct MP3/WAV URL with CORS enabled.";
+}
+
+export default function TestTonePlayer({
+  defaultAudioUrl = DEFAULT_AUDIO_URL,
+}: TestTonePlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const pitchShiftRef = useRef<Tone.PitchShift | null>(null);
+  const currentUrlRef = useRef(defaultAudioUrl);
 
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [errorMessage, setErrorMessage] = useState("");
-  const [audioUrl, setAudioUrl] = useState(DEFAULT_AUDIO_URL);
-  const [urlInput, setUrlInput] = useState(DEFAULT_AUDIO_URL);
+  const [audioUrl, setAudioUrl] = useState(defaultAudioUrl);
+  const [urlInput, setUrlInput] = useState(defaultAudioUrl);
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState<(typeof SPEED_OPTIONS)[number]>(1);
   const [pitch, setPitch] = useState(0);
+  const [volume, setVolume] = useState(DEFAULT_VOLUME);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
 
@@ -73,9 +114,22 @@ export default function TestTonePlayer() {
 
     audio.crossOrigin = "anonymous";
     audio.preload = "metadata";
-    audio.src = DEFAULT_AUDIO_URL;
     audio.playbackRate = speed;
+    audio.volume = volume;
     setPreservesPitch(audio, true);
+
+    try {
+      const playableDefaultUrl = normalizeAudioUrl(currentUrlRef.current);
+      audio.src = playableDefaultUrl;
+      currentUrlRef.current = playableDefaultUrl;
+      setAudioUrl(playableDefaultUrl);
+      setUrlInput(playableDefaultUrl);
+    } catch (error) {
+      setLoadState("error");
+      setErrorMessage(
+        error instanceof Error ? error.message : "Use a valid audio URL.",
+      );
+    }
 
     const mediaSource = Tone.getContext().createMediaElementSource(audio);
     Tone.connect(mediaSource, pitchShift);
@@ -91,6 +145,12 @@ export default function TestTonePlayer() {
       setPosition(audio.currentTime || 0);
     };
 
+    const handleCanPlay = () => {
+      setDuration(audio.duration || 0);
+      setLoadState("ready");
+      setErrorMessage("");
+    };
+
     const handleEnded = () => {
       setIsPlaying(false);
       setPosition(0);
@@ -100,15 +160,42 @@ export default function TestTonePlayer() {
     const handleError = () => {
       setIsPlaying(false);
       setLoadState("error");
-      setErrorMessage(
-        "Audio failed to load. Use a direct MP3/WAV URL with CORS enabled.",
-      );
+      setErrorMessage(getMediaErrorMessage(audio.error));
     };
 
-    audio.addEventListener("loadedmetadata", handleLoadedMetadata);
-    audio.addEventListener("timeupdate", handleTimeUpdate);
+    const handlePlaying = () => {
+      setIsPlaying(true);
+      setLoadState("ready");
+    };
+
+    const handlePause = () => {
+      setIsPlaying(false);
+    };
+
+    const handleSeeked = () => {
+      setPosition(audio.currentTime || 0);
+      if (!audio.paused) setLoadState("ready");
+    };
+
+    const handleSeeking = () => {
+      setPosition(audio.currentTime || 0);
+      if (!audio.paused) setLoadState("buffering");
+    };
+
+    const handleWaiting = () => {
+      if (!audio.paused) setLoadState("buffering");
+    };
+
+    audio.addEventListener("canplay", handleCanPlay);
     audio.addEventListener("ended", handleEnded);
     audio.addEventListener("error", handleError);
+    audio.addEventListener("loadedmetadata", handleLoadedMetadata);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("playing", handlePlaying);
+    audio.addEventListener("seeked", handleSeeked);
+    audio.addEventListener("seeking", handleSeeking);
+    audio.addEventListener("timeupdate", handleTimeUpdate);
+    audio.addEventListener("waiting", handleWaiting);
     audio.load();
 
     audioRef.current = audio;
@@ -119,10 +206,16 @@ export default function TestTonePlayer() {
       audio.pause();
       audio.removeAttribute("src");
       audio.load();
-      audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
-      audio.removeEventListener("timeupdate", handleTimeUpdate);
+      audio.removeEventListener("canplay", handleCanPlay);
       audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("error", handleError);
+      audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("playing", handlePlaying);
+      audio.removeEventListener("seeked", handleSeeked);
+      audio.removeEventListener("seeking", handleSeeking);
+      audio.removeEventListener("timeupdate", handleTimeUpdate);
+      audio.removeEventListener("waiting", handleWaiting);
       mediaSource.disconnect();
       pitchShift.dispose();
       audioRef.current = null;
@@ -139,6 +232,12 @@ export default function TestTonePlayer() {
     audioRef.current.playbackRate = speed;
     setPreservesPitch(audioRef.current, true);
   }, [speed]);
+
+  useEffect(() => {
+    if (!audioRef.current) return;
+
+    audioRef.current.volume = volume;
+  }, [volume]);
 
   useEffect(() => {
     if (pitchShiftRef.current) {
@@ -165,6 +264,7 @@ export default function TestTonePlayer() {
     audioRef.current.currentTime = 0;
     audioRef.current.src = playableUrl;
     audioRef.current.load();
+    currentUrlRef.current = playableUrl;
 
     setAudioUrl(playableUrl);
     setUrlInput(playableUrl);
@@ -192,6 +292,7 @@ export default function TestTonePlayer() {
 
       await audioRef.current.play();
       setIsPlaying(true);
+      setLoadState("ready");
     } catch (error) {
       setLoadState("error");
       setErrorMessage(
@@ -235,6 +336,7 @@ export default function TestTonePlayer() {
   };
 
   const isReady = loadState === "ready";
+  const canUseTransport = loadState === "ready" || loadState === "buffering";
 
   return (
     <section className="mx-auto w-full max-w-xl rounded-lg border border-slate-200 bg-white p-6 text-slate-950 shadow-sm">
@@ -250,7 +352,7 @@ export default function TestTonePlayer() {
         <div className="flex flex-col gap-2 sm:flex-row">
           <input
             id="audio-url"
-            type="url"
+            type="text"
             value={urlInput}
             onChange={(event) => setUrlInput(event.target.value)}
             placeholder="https://example.com/song.mp3"
@@ -268,6 +370,7 @@ export default function TestTonePlayer() {
       <div className="mb-5 rounded-md bg-slate-50 p-3 text-sm">
         <span className="font-medium">Status: </span>
         {loadState === "loading" && "Loading audio..."}
+        {loadState === "buffering" && "Buffering..."}
         {loadState === "ready" && (isPlaying ? "Playing" : "Ready")}
         {loadState === "error" && `Error - ${errorMessage}`}
       </div>
@@ -284,7 +387,7 @@ export default function TestTonePlayer() {
         <button
           type="button"
           onClick={pause}
-          disabled={!isReady || !isPlaying}
+          disabled={!canUseTransport || !isPlaying}
           className="rounded-md bg-amber-500 px-4 py-2 font-medium text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-300"
         >
           Pause
@@ -292,7 +395,7 @@ export default function TestTonePlayer() {
         <button
           type="button"
           onClick={stop}
-          disabled={!isReady}
+          disabled={!canUseTransport}
           className="rounded-md bg-slate-800 px-4 py-2 font-medium text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:bg-slate-300"
         >
           Stop
@@ -316,7 +419,7 @@ export default function TestTonePlayer() {
           step={0.1}
           value={position}
           onChange={(event) => seek(Number(event.target.value))}
-          disabled={!isReady}
+          disabled={!canUseTransport}
           className="w-full accent-blue-600 disabled:opacity-50"
         />
       </div>
@@ -359,6 +462,27 @@ export default function TestTonePlayer() {
           step={1}
           value={pitch}
           onChange={(event) => setPitch(Number(event.target.value))}
+          className="w-full accent-blue-600"
+        />
+      </div>
+
+      <div className="mt-6">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <label htmlFor="test-tone-volume" className="font-medium">
+            Volume
+          </label>
+          <span className="text-sm text-slate-600">
+            {Math.round(volume * 100)}%
+          </span>
+        </div>
+        <input
+          id="test-tone-volume"
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={volume}
+          onChange={(event) => setVolume(Number(event.target.value))}
           className="w-full accent-blue-600"
         />
       </div>
