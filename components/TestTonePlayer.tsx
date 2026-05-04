@@ -9,6 +9,7 @@ const DEFAULT_AUDIO_URL =
 const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5, 2] as const;
 const MIN_PITCH = -4;
 const MAX_PITCH = 4;
+const END_OFFSET_PADDING = 0.05;
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -217,6 +218,29 @@ export default function TestTonePlayer() {
     await loadAudioUrl(urlInput);
   };
 
+  const getSafePlaybackOffset = (nextPosition: number) => {
+    const latestStartPosition =
+      durationRef.current > END_OFFSET_PADDING
+        ? durationRef.current - END_OFFSET_PADDING
+        : 0;
+
+    return Math.min(latestStartPosition, Math.max(0, nextPosition));
+  };
+
+  const commitSeek = (nextPosition: number) => {
+    if (!playerRef.current) return;
+
+    const nextOffset = getSafePlaybackOffset(nextPosition);
+    startOffsetRef.current = nextOffset;
+    setPosition(nextOffset);
+
+    if (isPlaying) {
+      playerRef.current.restart(undefined, nextOffset);
+      startTimeRef.current = Tone.now();
+      startProgressClock();
+    }
+  };
+
   const play = async () => {
     if (loadState !== "ready" || !playerRef.current || isPlaying) return;
 
@@ -224,7 +248,9 @@ export default function TestTonePlayer() {
       // Browsers require AudioContext startup from a user gesture.
       await Tone.start();
       const nextOffset =
-        startOffsetRef.current >= durationRef.current ? 0 : startOffsetRef.current;
+        startOffsetRef.current >= durationRef.current - END_OFFSET_PADDING
+          ? 0
+          : getSafePlaybackOffset(startOffsetRef.current);
 
       playerRef.current.start(undefined, nextOffset);
       startOffsetRef.current = nextOffset;
@@ -262,20 +288,10 @@ export default function TestTonePlayer() {
   };
 
   const seek = (nextPosition: number) => {
-    const boundedPosition = Math.min(
-      durationRef.current,
-      Math.max(0, nextPosition),
-    );
+    const boundedPosition = getSafePlaybackOffset(nextPosition);
 
     startOffsetRef.current = boundedPosition;
     setPosition(boundedPosition);
-
-    if (isPlaying && playerRef.current) {
-      playerRef.current.stop();
-      playerRef.current.start(undefined, boundedPosition);
-      startTimeRef.current = Tone.now();
-      startProgressClock();
-    }
   };
 
   const formatTime = (seconds: number) => {
@@ -369,6 +385,10 @@ export default function TestTonePlayer() {
           step={0.1}
           value={position}
           onChange={(event) => seek(Number(event.target.value))}
+          onBlur={(event) => commitSeek(Number(event.currentTarget.value))}
+          onKeyUp={(event) => commitSeek(Number(event.currentTarget.value))}
+          onMouseUp={(event) => commitSeek(Number(event.currentTarget.value))}
+          onTouchEnd={(event) => commitSeek(Number(event.currentTarget.value))}
           disabled={!isReady}
           className="w-full accent-blue-600 disabled:opacity-50"
         />

@@ -10,6 +10,7 @@ const mockPlayer = {
   },
   connect: vi.fn(),
   dispose: vi.fn(),
+  restart: vi.fn(),
   start: vi.fn(),
   stop: vi.fn(),
   toDestination: vi.fn(() => mockPlayer),
@@ -107,6 +108,22 @@ describe("Home Tone.js test player", () => {
 
     await user.click(screen.getByRole("button", { name: /stop/i }));
     expect(screen.getByText("Ready")).toBeInTheDocument();
+  });
+
+  it("restarts from a committed seek position while playing", async () => {
+    const user = userEvent.setup();
+    render(<Home />);
+
+    await screen.findByText("Ready");
+    await user.click(screen.getByRole("button", { name: /play/i }));
+
+    const playback = screen.getByLabelText(/playback/i);
+
+    fireEvent.change(playback, { target: { value: "80" } });
+    expect(mockPlayer.restart).not.toHaveBeenCalled();
+
+    fireEvent.mouseUp(playback, { currentTarget: { value: "80" } });
+    expect(mockPlayer.restart).toHaveBeenCalledWith(undefined, 80);
   });
 
   it("updates speed and pitch controls", async () => {
