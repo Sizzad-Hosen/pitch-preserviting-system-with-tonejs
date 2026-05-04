@@ -12,10 +12,6 @@ const MAX_PITCH = 4;
 
 type LoadState = "loading" | "ready" | "error";
 
-function getPitchPreservingShift(speed: number, manualPitch: number) {
-  return manualPitch - 12 * Math.log2(speed);
-}
-
 function normalizeAudioUrl(input: string) {
   const trimmedUrl = input.trim();
   const parsedUrl = new URL(trimmedUrl);
@@ -42,8 +38,7 @@ function normalizeAudioUrl(input: string) {
 }
 
 export default function TestTonePlayer() {
-  const playerRef = useRef<Tone.Player | null>(null);
-  const pitchShiftRef = useRef<Tone.PitchShift | null>(null);
+  const playerRef = useRef<Tone.GrainPlayer | null>(null);
   const mountedRef = useRef(false);
   const startTimeRef = useRef(0);
   const startOffsetRef = useRef(0);
@@ -115,11 +110,12 @@ export default function TestTonePlayer() {
   useEffect(() => {
     mountedRef.current = true;
 
-    const pitchShift = new Tone.PitchShift({ pitch }).toDestination();
-    const player = new Tone.Player({
+    const player = new Tone.GrainPlayer({
       url: DEFAULT_AUDIO_URL,
       playbackRate: speed,
-      autostart: false,
+      detune: pitch * 100,
+      grainSize: 0.12,
+      overlap: 0.06,
       loop: false,
       onload: () => {
         if (mountedRef.current) {
@@ -139,22 +135,18 @@ export default function TestTonePlayer() {
       },
     });
 
-    // Required signal path: Player -> PitchShift -> Destination.
-    player.connect(pitchShift);
+    player.toDestination();
 
     playerRef.current = player;
-    pitchShiftRef.current = pitchShift;
 
     return () => {
       mountedRef.current = false;
       stopProgressClock();
       player.stop();
       player.dispose();
-      pitchShift.dispose();
       playerRef.current = null;
-      pitchShiftRef.current = null;
     };
-    // Create the Tone nodes once, then control them through refs below.
+    // Create the Tone player once, then control it through refs below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -172,10 +164,10 @@ export default function TestTonePlayer() {
   }, [getCurrentOffset, isPlaying, speed]);
 
   useEffect(() => {
-    if (pitchShiftRef.current) {
-      pitchShiftRef.current.pitch = getPitchPreservingShift(speed, pitch);
+    if (playerRef.current) {
+      playerRef.current.detune = pitch * 100;
     }
-  }, [pitch, speed]);
+  }, [pitch]);
 
   const loadAudioUrl = async (nextUrl: string) => {
     if (!playerRef.current) return;
@@ -201,7 +193,7 @@ export default function TestTonePlayer() {
     setUrlInput(playableUrl);
 
     try {
-      await playerRef.current.load(playableUrl);
+      await playerRef.current.buffer.load(playableUrl);
 
       if (!mountedRef.current || loadRequestRef.current !== requestId) return;
 

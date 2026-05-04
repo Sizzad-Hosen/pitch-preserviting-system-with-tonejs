@@ -4,28 +4,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import Home from "./page";
 
 const mockPlayer = {
-  buffer: { duration: 125 },
+  buffer: {
+    duration: 125,
+    load: vi.fn(() => Promise.resolve(mockPlayer)),
+  },
   connect: vi.fn(),
   dispose: vi.fn(),
-  load: vi.fn(() => Promise.resolve(mockPlayer)),
   start: vi.fn(),
   stop: vi.fn(),
+  toDestination: vi.fn(() => mockPlayer),
   playbackRate: 1,
-};
-
-const mockPitchShift = {
-  dispose: vi.fn(),
-  toDestination: vi.fn(() => mockPitchShift),
-  pitch: 0,
+  detune: 0,
 };
 
 vi.mock("tone", () => ({
-  Player: vi.fn(function Player(options: { onload?: () => void }) {
+  GrainPlayer: vi.fn(function GrainPlayer(options: { onload?: () => void }) {
     queueMicrotask(() => options.onload?.());
     return mockPlayer;
-  }),
-  PitchShift: vi.fn(function PitchShift() {
-    return mockPitchShift;
   }),
   now: vi.fn(() => 0),
   start: vi.fn(() => Promise.resolve()),
@@ -35,8 +30,8 @@ afterEach(() => {
   vi.clearAllMocks();
   mockPlayer.buffer.duration = 125;
   mockPlayer.playbackRate = 1;
-  mockPlayer.load.mockResolvedValue(mockPlayer);
-  mockPitchShift.pitch = 0;
+  mockPlayer.detune = 0;
+  mockPlayer.buffer.load.mockResolvedValue(mockPlayer);
 });
 
 describe("Home Tone.js test player", () => {
@@ -73,7 +68,7 @@ describe("Home Tone.js test player", () => {
     await user.click(screen.getByRole("button", { name: /load url/i }));
 
     expect(mockPlayer.stop).toHaveBeenCalled();
-    expect(mockPlayer.load).toHaveBeenCalledWith(nextUrl);
+    expect(mockPlayer.buffer.load).toHaveBeenCalledWith(nextUrl);
     expect(await screen.findByText(nextUrl)).toBeInTheDocument();
     expect(screen.getByText("Ready")).toBeInTheDocument();
   });
@@ -93,7 +88,7 @@ describe("Home Tone.js test player", () => {
     await user.type(screen.getByLabelText(/audio url/i), blobUrl);
     await user.click(screen.getByRole("button", { name: /load url/i }));
 
-    expect(mockPlayer.load).toHaveBeenCalledWith(rawUrl);
+    expect(mockPlayer.buffer.load).toHaveBeenCalledWith(rawUrl);
     expect(await screen.findByDisplayValue(rawUrl)).toBeInTheDocument();
   });
 
@@ -122,13 +117,13 @@ describe("Home Tone.js test player", () => {
     await user.click(screen.getByRole("button", { name: "1.5x" }));
     expect(screen.getAllByText("1.5x")).toHaveLength(2);
     expect(mockPlayer.playbackRate).toBe(1.5);
-    expect(mockPitchShift.pitch).toBeCloseTo(-7.02, 2);
+    expect(mockPlayer.detune).toBe(0);
 
     fireEvent.change(screen.getByLabelText(/pitch/i), {
       target: { value: "4" },
     });
 
     expect(screen.getByText("+4 semitones")).toBeInTheDocument();
-    expect(mockPitchShift.pitch).toBeCloseTo(-3.02, 2);
+    expect(mockPlayer.detune).toBe(400);
   });
 });
