@@ -78,6 +78,25 @@ describe("Home Tone.js test player", () => {
     expect(screen.getByText("Ready")).toBeInTheDocument();
   });
 
+  it("converts GitHub blob URLs to raw audio URLs before loading", async () => {
+    const user = userEvent.setup();
+    render(<Home />);
+
+    await screen.findByText("Ready");
+
+    const blobUrl =
+      "https://github.com/Sizzad-Hosen/pitch-preserviting-system-with-tonejs/blob/main/public/audio/Alan%20Walker%20%20Faded.mp3";
+    const rawUrl =
+      "https://raw.githubusercontent.com/Sizzad-Hosen/pitch-preserviting-system-with-tonejs/main/public/audio/Alan%20Walker%20%20Faded.mp3";
+
+    await user.clear(screen.getByLabelText(/audio url/i));
+    await user.type(screen.getByLabelText(/audio url/i), blobUrl);
+    await user.click(screen.getByRole("button", { name: /load url/i }));
+
+    expect(mockPlayer.load).toHaveBeenCalledWith(rawUrl);
+    expect(await screen.findByDisplayValue(rawUrl)).toBeInTheDocument();
+  });
+
   it("starts, pauses, and stops playback", async () => {
     const user = userEvent.setup();
     render(<Home />);

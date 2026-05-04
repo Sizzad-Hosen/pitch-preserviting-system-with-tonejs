@@ -12,6 +12,31 @@ const MAX_PITCH = 4;
 
 type LoadState = "loading" | "ready" | "error";
 
+function normalizeAudioUrl(input: string) {
+  const trimmedUrl = input.trim();
+  const parsedUrl = new URL(trimmedUrl);
+
+  if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+    throw new Error("Use a valid http or https audio URL.");
+  }
+
+  const [, owner, repo, marker, branch, ...filePath] =
+    parsedUrl.pathname.split("/");
+
+  if (
+    parsedUrl.hostname === "github.com" &&
+    owner &&
+    repo &&
+    marker === "blob" &&
+    branch &&
+    filePath.length > 0
+  ) {
+    return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath.join("/")}`;
+  }
+
+  return trimmedUrl;
+}
+
 export default function TestTonePlayer() {
   const playerRef = useRef<Tone.Player | null>(null);
   const pitchShiftRef = useRef<Tone.PitchShift | null>(null);
@@ -149,16 +174,12 @@ export default function TestTonePlayer() {
   }, [pitch]);
 
   const loadAudioUrl = async (nextUrl: string) => {
-    const trimmedUrl = nextUrl.trim();
-
     if (!playerRef.current) return;
 
-    try {
-      const parsedUrl = new URL(trimmedUrl);
+    let playableUrl: string;
 
-      if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-        throw new Error("Use a valid http or https audio URL.");
-      }
+    try {
+      playableUrl = normalizeAudioUrl(nextUrl);
     } catch (error) {
       setLoadState("error");
       setErrorMessage(
@@ -172,10 +193,11 @@ export default function TestTonePlayer() {
     resetPlaybackState();
     setLoadState("loading");
     setErrorMessage("");
-    setAudioUrl(trimmedUrl);
+    setAudioUrl(playableUrl);
+    setUrlInput(playableUrl);
 
     try {
-      await playerRef.current.load(trimmedUrl);
+      await playerRef.current.load(playableUrl);
 
       if (!mountedRef.current || loadRequestRef.current !== requestId) return;
 
