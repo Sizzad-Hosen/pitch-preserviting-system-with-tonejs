@@ -12,6 +12,10 @@ const MAX_PITCH = 4;
 
 type LoadState = "loading" | "ready" | "error";
 
+function getPitchPreservingShift(speed: number, manualPitch: number) {
+  return manualPitch - 12 * Math.log2(speed);
+}
+
 function normalizeAudioUrl(input: string) {
   const trimmedUrl = input.trim();
   const parsedUrl = new URL(trimmedUrl);
@@ -169,9 +173,9 @@ export default function TestTonePlayer() {
 
   useEffect(() => {
     if (pitchShiftRef.current) {
-      pitchShiftRef.current.pitch = pitch;
+      pitchShiftRef.current.pitch = getPitchPreservingShift(speed, pitch);
     }
-  }, [pitch]);
+  }, [pitch, speed]);
 
   const loadAudioUrl = async (nextUrl: string) => {
     if (!playerRef.current) return;

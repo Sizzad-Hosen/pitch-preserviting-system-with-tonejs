@@ -122,12 +122,13 @@ describe("Home Tone.js test player", () => {
     await user.click(screen.getByRole("button", { name: "1.5x" }));
     expect(screen.getAllByText("1.5x")).toHaveLength(2);
     expect(mockPlayer.playbackRate).toBe(1.5);
+    expect(mockPitchShift.pitch).toBeCloseTo(-7.02, 2);
 
     fireEvent.change(screen.getByLabelText(/pitch/i), {
       target: { value: "4" },
     });
 
     expect(screen.getByText("+4 semitones")).toBeInTheDocument();
-    expect(mockPitchShift.pitch).toBe(4);
+    expect(mockPitchShift.pitch).toBeCloseTo(-3.02, 2);
   });
 });
