@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Home from "./page";
@@ -7,10 +7,10 @@ const mockPlayer = {
   buffer: { duration: 125 },
   connect: vi.fn(),
   dispose: vi.fn(),
+  load: vi.fn(() => Promise.resolve(mockPlayer)),
   start: vi.fn(),
   stop: vi.fn(),
   playbackRate: 1,
-  volume: { value: -4 },
 };
 
 const mockPitchShift = {
@@ -20,14 +20,13 @@ const mockPitchShift = {
 };
 
 vi.mock("tone", () => ({
-  Destination: "destination",
-  GrainPlayer: vi.fn(function GrainPlayer() {
+  Player: vi.fn(function Player(options: { onload?: () => void }) {
+    queueMicrotask(() => options.onload?.());
     return mockPlayer;
   }),
   PitchShift: vi.fn(function PitchShift() {
     return mockPitchShift;
   }),
-  loaded: vi.fn(() => Promise.resolve()),
   now: vi.fn(() => 0),
   start: vi.fn(() => Promise.resolve()),
 }));
@@ -36,63 +35,80 @@ afterEach(() => {
   vi.clearAllMocks();
   mockPlayer.buffer.duration = 125;
   mockPlayer.playbackRate = 1;
-  mockPlayer.volume.value = -4;
+  mockPlayer.load.mockResolvedValue(mockPlayer);
   mockPitchShift.pitch = 0;
 });
 
-describe("Home audio player", () => {
-  it("renders the audio player with playback disabled before upload", () => {
+describe("Home Tone.js test player", () => {
+  it("renders the hardcoded URL player and enables controls after load", async () => {
     render(<Home />);
 
     expect(
-      screen.getByRole("heading", { name: /learning audio player/i }),
+      screen.getByRole("heading", { name: /tone\.js test player/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/waiting for audio/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /play/i })).toBeDisabled();
-    expect(screen.getByLabelText(/playback position/i)).toBeDisabled();
-  });
+    expect(
+      screen.getByText(
+        "https://cdn.jsdelivr.net/gh/mdn/webaudio-examples/audio-basics/outfoxing.mp3",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/loading audio/i)).toBeInTheDocument();
 
-  it("loads an uploaded audio file and enables playback controls", async () => {
-    const user = userEvent.setup();
-    render(<Home />);
-
-    const file = new File(["audio"], "lesson.mp3", { type: "audio/mpeg" });
-    await user.upload(screen.getByLabelText(/upload audio/i), file);
-
-    expect(await screen.findByText("lesson.mp3")).toBeInTheDocument();
-    expect(screen.getByText(/ready/i)).toBeInTheDocument();
-    expect(screen.getByText("0:00 / 2:05")).toBeInTheDocument();
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /play/i })).toBeEnabled();
-    expect(screen.getByLabelText(/playback position/i)).toBeEnabled();
+    expect(screen.getByLabelText(/playback/i)).toBeEnabled();
+    expect(screen.getByText("0:00 / 2:05")).toBeInTheDocument();
   });
 
-  it("updates tempo from preset buttons and slider", async () => {
+  it("loads a pasted audio URL into the existing player", async () => {
     const user = userEvent.setup();
     render(<Home />);
 
-    await user.click(screen.getByRole("button", { name: "1.5x" }));
-    expect(screen.getAllByText("1.50x")).toHaveLength(2);
+    await screen.findByText("Ready");
 
-    fireEvent.change(screen.getByLabelText(/tempo/i), {
-      target: { value: "0.75" },
-    });
+    const nextUrl =
+      "https://tonejs.github.io/audio/berklee/gurgling_theremin_1.mp3";
 
-    await waitFor(() => {
-      expect(screen.getAllByText("0.75x")).toHaveLength(3);
-    });
+    await user.clear(screen.getByLabelText(/audio url/i));
+    await user.type(screen.getByLabelText(/audio url/i), nextUrl);
+    await user.click(screen.getByRole("button", { name: /load url/i }));
+
+    expect(mockPlayer.stop).toHaveBeenCalled();
+    expect(mockPlayer.load).toHaveBeenCalledWith(nextUrl);
+    expect(await screen.findByText(nextUrl)).toBeInTheDocument();
+    expect(screen.getByText("Ready")).toBeInTheDocument();
   });
 
-  it("updates pitch and volume readouts", async () => {
+  it("starts, pauses, and stops playback", async () => {
+    const user = userEvent.setup();
     render(<Home />);
 
-    fireEvent.change(screen.getByLabelText(/pitch shift/i), {
-      target: { value: "5" },
-    });
-    fireEvent.change(screen.getByLabelText(/volume/i), {
-      target: { value: "-12" },
+    await screen.findByText("Ready");
+    await user.click(screen.getByRole("button", { name: /play/i }));
+
+    expect(mockPlayer.start).toHaveBeenCalledWith(undefined, 0);
+    expect(screen.getByText("Playing")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /pause/i }));
+    expect(mockPlayer.stop).toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: /stop/i }));
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+  });
+
+  it("updates speed and pitch controls", async () => {
+    const user = userEvent.setup();
+    render(<Home />);
+
+    await screen.findByText("Ready");
+    await user.click(screen.getByRole("button", { name: "1.5x" }));
+    expect(screen.getAllByText("1.5x")).toHaveLength(2);
+    expect(mockPlayer.playbackRate).toBe(1.5);
+
+    fireEvent.change(screen.getByLabelText(/pitch/i), {
+      target: { value: "4" },
     });
 
-    expect(screen.getByText("+5 st")).toBeInTheDocument();
-    expect(screen.getAllByText("-12 dB")).toHaveLength(2);
+    expect(screen.getByText("+4 semitones")).toBeInTheDocument();
+    expect(mockPitchShift.pitch).toBe(4);
   });
 });
