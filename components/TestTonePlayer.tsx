@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import * as Tone from "tone";
 
 const DEFAULT_AUDIO_URL =
@@ -9,7 +9,6 @@ const DEFAULT_AUDIO_URL =
 const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5, 2] as const;
 const MIN_PITCH = -4;
 const MAX_PITCH = 4;
-const END_OFFSET_PADDING = 0.05;
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -38,15 +37,22 @@ function normalizeAudioUrl(input: string) {
   return trimmedUrl;
 }
 
+function setPreservesPitch(audio: HTMLAudioElement, enabled: boolean) {
+  const audioWithVendorFlags = audio as HTMLAudioElement & {
+    mozPreservesPitch?: boolean;
+    preservesPitch?: boolean;
+    webkitPreservesPitch?: boolean;
+  };
+
+  audioWithVendorFlags.preservesPitch = enabled;
+  audioWithVendorFlags.mozPreservesPitch = enabled;
+  audioWithVendorFlags.webkitPreservesPitch = enabled;
+}
+
 export default function TestTonePlayer() {
-  const playerRef = useRef<Tone.GrainPlayer | null>(null);
-  const mountedRef = useRef(false);
-  const startTimeRef = useRef(0);
-  const startOffsetRef = useRef(0);
-  const durationRef = useRef(0);
-  const progressTimerRef = useRef<number | null>(null);
-  const speedRef = useRef<(typeof SPEED_OPTIONS)[number]>(1);
-  const loadRequestRef = useRef(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const mediaSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const pitchShiftRef = useRef<Tone.PitchShift | null>(null);
 
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [errorMessage, setErrorMessage] = useState("");
@@ -58,120 +64,90 @@ export default function TestTonePlayer() {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  const getCurrentOffset = useCallback(() => {
-    if (!isPlaying) return startOffsetRef.current;
-
-    const elapsed = (Tone.now() - startTimeRef.current) * speedRef.current;
-    const duration = durationRef.current || Number.POSITIVE_INFINITY;
-
-    return Math.min(duration, startOffsetRef.current + elapsed);
-  }, [isPlaying]);
-
-  const stopProgressClock = useCallback(() => {
-    if (progressTimerRef.current) {
-      window.clearInterval(progressTimerRef.current);
-      progressTimerRef.current = null;
-    }
-  }, []);
-
-  const startProgressClock = useCallback(() => {
-    stopProgressClock();
-
-    progressTimerRef.current = window.setInterval(() => {
-      const elapsed = (Tone.now() - startTimeRef.current) * speedRef.current;
-      const nextPosition = Math.min(
-        durationRef.current,
-        startOffsetRef.current + elapsed,
-      );
-
-      setPosition(nextPosition);
-
-      if (durationRef.current > 0 && nextPosition >= durationRef.current) {
-        playerRef.current?.stop();
-        startOffsetRef.current = 0;
-        startTimeRef.current = 0;
-        setPosition(0);
-        setIsPlaying(false);
-        stopProgressClock();
-      }
-    }, 150);
-  }, [stopProgressClock]);
-
-  const resetPlaybackState = useCallback(() => {
-    playerRef.current?.stop();
-    startOffsetRef.current = 0;
-    startTimeRef.current = 0;
-    durationRef.current = 0;
-    setPosition(0);
-    setDuration(0);
-    setIsPlaying(false);
-    stopProgressClock();
-  }, [stopProgressClock]);
-
   useEffect(() => {
-    mountedRef.current = true;
+    const audio = document.createElement("audio");
+    const pitchShift = new Tone.PitchShift({
+      pitch: 0,
+      windowSize: 0.08,
+    }).toDestination();
 
-    const player = new Tone.GrainPlayer({
-      url: DEFAULT_AUDIO_URL,
-      playbackRate: speed,
-      detune: pitch * 100,
-      grainSize: 0.12,
-      overlap: 0.06,
-      loop: false,
-      onload: () => {
-        if (mountedRef.current) {
-          durationRef.current = player.buffer.duration;
-          setDuration(player.buffer.duration);
-          setLoadState("ready");
-        }
-      },
-      onerror: (error) => {
-        if (mountedRef.current) {
-          setLoadState("error");
-          setErrorMessage(
-            error.message ||
-              "Audio failed to load. Try an HTTPS URL with CORS enabled.",
-          );
-        }
-      },
-    });
+    audio.crossOrigin = "anonymous";
+    audio.preload = "metadata";
+    audio.src = DEFAULT_AUDIO_URL;
+    audio.playbackRate = speed;
+    setPreservesPitch(audio, true);
 
-    player.toDestination();
+    const mediaSource = Tone.getContext().createMediaElementSource(audio);
+    Tone.connect(mediaSource, pitchShift);
 
-    playerRef.current = player;
+    const handleLoadedMetadata = () => {
+      setDuration(audio.duration || 0);
+      setPosition(audio.currentTime || 0);
+      setLoadState("ready");
+      setErrorMessage("");
+    };
+
+    const handleTimeUpdate = () => {
+      setPosition(audio.currentTime || 0);
+    };
+
+    const handleEnded = () => {
+      setIsPlaying(false);
+      setPosition(0);
+      audio.currentTime = 0;
+    };
+
+    const handleError = () => {
+      setIsPlaying(false);
+      setLoadState("error");
+      setErrorMessage(
+        "Audio failed to load. Use a direct MP3/WAV URL with CORS enabled.",
+      );
+    };
+
+    audio.addEventListener("loadedmetadata", handleLoadedMetadata);
+    audio.addEventListener("timeupdate", handleTimeUpdate);
+    audio.addEventListener("ended", handleEnded);
+    audio.addEventListener("error", handleError);
+    audio.load();
+
+    audioRef.current = audio;
+    mediaSourceRef.current = mediaSource;
+    pitchShiftRef.current = pitchShift;
 
     return () => {
-      mountedRef.current = false;
-      stopProgressClock();
-      player.stop();
-      player.dispose();
-      playerRef.current = null;
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      audio.removeEventListener("timeupdate", handleTimeUpdate);
+      audio.removeEventListener("ended", handleEnded);
+      audio.removeEventListener("error", handleError);
+      mediaSource.disconnect();
+      pitchShift.dispose();
+      audioRef.current = null;
+      mediaSourceRef.current = null;
+      pitchShiftRef.current = null;
     };
-    // Create the Tone player once, then control it through refs below.
+    // Create the media element and Tone graph once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (playerRef.current) {
-      if (isPlaying) {
-        startOffsetRef.current = getCurrentOffset();
-        startTimeRef.current = Tone.now();
-      }
+    if (!audioRef.current) return;
 
-      playerRef.current.playbackRate = speed;
-    }
-
-    speedRef.current = speed;
-  }, [getCurrentOffset, isPlaying, speed]);
+    audioRef.current.playbackRate = speed;
+    setPreservesPitch(audioRef.current, true);
+  }, [speed]);
 
   useEffect(() => {
-    if (playerRef.current) {
-      playerRef.current.detune = pitch * 100;
+    if (pitchShiftRef.current) {
+      pitchShiftRef.current.pitch = pitch;
     }
   }, [pitch]);
 
   const loadAudioUrl = async (nextUrl: string) => {
-    if (!playerRef.current) return;
+    if (!audioRef.current) return;
 
     let playableUrl: string;
 
@@ -185,32 +161,18 @@ export default function TestTonePlayer() {
       return;
     }
 
-    const requestId = loadRequestRef.current + 1;
-    loadRequestRef.current = requestId;
-    resetPlaybackState();
-    setLoadState("loading");
-    setErrorMessage("");
+    audioRef.current.pause();
+    audioRef.current.currentTime = 0;
+    audioRef.current.src = playableUrl;
+    audioRef.current.load();
+
     setAudioUrl(playableUrl);
     setUrlInput(playableUrl);
-
-    try {
-      await playerRef.current.buffer.load(playableUrl);
-
-      if (!mountedRef.current || loadRequestRef.current !== requestId) return;
-
-      durationRef.current = playerRef.current.buffer.duration;
-      setDuration(playerRef.current.buffer.duration);
-      setLoadState("ready");
-    } catch (error) {
-      if (!mountedRef.current || loadRequestRef.current !== requestId) return;
-
-      setLoadState("error");
-      setErrorMessage(
-        error instanceof Error
-          ? error.message
-          : "Audio failed to load. Try an HTTPS URL with CORS enabled.",
-      );
-    }
+    setPosition(0);
+    setDuration(0);
+    setIsPlaying(false);
+    setLoadState("loading");
+    setErrorMessage("");
   };
 
   const handleUrlSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -218,46 +180,18 @@ export default function TestTonePlayer() {
     await loadAudioUrl(urlInput);
   };
 
-  const getSafePlaybackOffset = (nextPosition: number) => {
-    const latestStartPosition =
-      durationRef.current > END_OFFSET_PADDING
-        ? durationRef.current - END_OFFSET_PADDING
-        : 0;
-
-    return Math.min(latestStartPosition, Math.max(0, nextPosition));
-  };
-
-  const commitSeek = (nextPosition: number) => {
-    if (!playerRef.current) return;
-
-    const nextOffset = getSafePlaybackOffset(nextPosition);
-    startOffsetRef.current = nextOffset;
-    setPosition(nextOffset);
-
-    if (isPlaying) {
-      playerRef.current.restart(undefined, nextOffset);
-      startTimeRef.current = Tone.now();
-      startProgressClock();
-    }
-  };
-
   const play = async () => {
-    if (loadState !== "ready" || !playerRef.current || isPlaying) return;
+    if (loadState !== "ready" || !audioRef.current || isPlaying) return;
 
     try {
-      // Browsers require AudioContext startup from a user gesture.
       await Tone.start();
-      const nextOffset =
-        startOffsetRef.current >= durationRef.current - END_OFFSET_PADDING
-          ? 0
-          : getSafePlaybackOffset(startOffsetRef.current);
 
-      playerRef.current.start(undefined, nextOffset);
-      startOffsetRef.current = nextOffset;
-      startTimeRef.current = Tone.now();
-      setPosition(nextOffset);
+      if (audioRef.current.currentTime >= audioRef.current.duration) {
+        audioRef.current.currentTime = 0;
+      }
+
+      await audioRef.current.play();
       setIsPlaying(true);
-      startProgressClock();
     } catch (error) {
       setLoadState("error");
       setErrorMessage(
@@ -267,30 +201,27 @@ export default function TestTonePlayer() {
   };
 
   const pause = () => {
-    if (!playerRef.current) return;
+    if (!audioRef.current) return;
 
-    startOffsetRef.current = getCurrentOffset();
-    playerRef.current.stop();
-    setPosition(startOffsetRef.current);
+    audioRef.current.pause();
+    setPosition(audioRef.current.currentTime || 0);
     setIsPlaying(false);
-    stopProgressClock();
   };
 
   const stop = () => {
-    if (!playerRef.current) return;
+    if (!audioRef.current) return;
 
-    playerRef.current.stop();
-    startOffsetRef.current = 0;
-    startTimeRef.current = 0;
+    audioRef.current.pause();
+    audioRef.current.currentTime = 0;
     setPosition(0);
     setIsPlaying(false);
-    stopProgressClock();
   };
 
   const seek = (nextPosition: number) => {
-    const boundedPosition = getSafePlaybackOffset(nextPosition);
+    if (!audioRef.current) return;
 
-    startOffsetRef.current = boundedPosition;
+    const boundedPosition = Math.min(duration, Math.max(0, nextPosition));
+    audioRef.current.currentTime = boundedPosition;
     setPosition(boundedPosition);
   };
 
@@ -308,7 +239,7 @@ export default function TestTonePlayer() {
   return (
     <section className="mx-auto w-full max-w-xl rounded-lg border border-slate-200 bg-white p-6 text-slate-950 shadow-sm">
       <div className="mb-5">
-        <h2 className="text-2xl font-semibold">Tone.js Test Player</h2>
+        <h2 className="text-2xl font-semibold">Test Player</h2>
         <p className="mt-2 break-all text-sm text-slate-600">{audioUrl}</p>
       </div>
 
@@ -385,10 +316,6 @@ export default function TestTonePlayer() {
           step={0.1}
           value={position}
           onChange={(event) => seek(Number(event.target.value))}
-          onBlur={(event) => commitSeek(Number(event.currentTarget.value))}
-          onKeyUp={(event) => commitSeek(Number(event.currentTarget.value))}
-          onMouseUp={(event) => commitSeek(Number(event.currentTarget.value))}
-          onTouchEnd={(event) => commitSeek(Number(event.currentTarget.value))}
           disabled={!isReady}
           className="w-full accent-blue-600 disabled:opacity-50"
         />

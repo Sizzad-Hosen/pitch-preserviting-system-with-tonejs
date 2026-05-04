@@ -1,46 +1,99 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Home from "./page";
 
-const mockPlayer = {
-  buffer: {
+type AudioEventName = "ended" | "error" | "loadedmetadata" | "timeupdate";
+
+function createMockAudio() {
+  const listeners = new Map<AudioEventName, Set<() => void>>();
+
+  const audio = {
+    crossOrigin: "",
+    currentTime: 0,
     duration: 125,
-    load: vi.fn(() => Promise.resolve(mockPlayer)),
-  },
+    playbackRate: 1,
+    preload: "",
+    preservesPitch: true,
+    src: "",
+    addEventListener: vi.fn((event: AudioEventName, listener: () => void) => {
+      if (!listeners.has(event)) listeners.set(event, new Set());
+      listeners.get(event)?.add(listener);
+    }),
+    dispatch: (event: AudioEventName) => {
+      listeners.get(event)?.forEach((listener) => listener());
+    },
+    load: vi.fn(() => {
+      queueMicrotask(() => audio.dispatch("loadedmetadata"));
+    }),
+    pause: vi.fn(),
+    play: vi.fn(() => Promise.resolve()),
+    removeAttribute: vi.fn((attribute: string) => {
+      if (attribute === "src") audio.src = "";
+    }),
+    removeEventListener: vi.fn(
+      (event: AudioEventName, listener: () => void) => {
+        listeners.get(event)?.delete(listener);
+      },
+    ),
+  };
+
+  return audio;
+}
+
+const mockMediaSource = {
   connect: vi.fn(),
+  disconnect: vi.fn(),
+  numberOfOutputs: 1,
+};
+
+const mockPitchShift = {
   dispose: vi.fn(),
-  restart: vi.fn(),
-  start: vi.fn(),
-  stop: vi.fn(),
-  toDestination: vi.fn(() => mockPlayer),
-  playbackRate: 1,
-  detune: 0,
+  pitch: 0,
+  toDestination: vi.fn(() => mockPitchShift),
 };
 
 vi.mock("tone", () => ({
-  GrainPlayer: vi.fn(function GrainPlayer(options: { onload?: () => void }) {
-    queueMicrotask(() => options.onload?.());
-    return mockPlayer;
+  connect: vi.fn(),
+  getContext: vi.fn(() => ({
+    createMediaElementSource: vi.fn(() => mockMediaSource),
+  })),
+  PitchShift: vi.fn(function PitchShift() {
+    return mockPitchShift;
   }),
-  now: vi.fn(() => 0),
   start: vi.fn(() => Promise.resolve()),
 }));
 
+let mockAudio: ReturnType<typeof createMockAudio>;
+let createElementSpy: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  mockAudio = createMockAudio();
+  const originalCreateElement = document.createElement.bind(document);
+
+  createElementSpy = vi
+    .spyOn(document, "createElement")
+    .mockImplementation((tagName: string) => {
+      if (tagName === "audio") {
+        return mockAudio as unknown as HTMLAudioElement;
+      }
+
+      return originalCreateElement(tagName);
+    });
+});
+
 afterEach(() => {
+  createElementSpy.mockRestore();
   vi.clearAllMocks();
-  mockPlayer.buffer.duration = 125;
-  mockPlayer.playbackRate = 1;
-  mockPlayer.detune = 0;
-  mockPlayer.buffer.load.mockResolvedValue(mockPlayer);
+  mockPitchShift.pitch = 0;
 });
 
 describe("Home Tone.js test player", () => {
-  it("renders the hardcoded URL player and enables controls after load", async () => {
+  it("renders the default URL player and enables controls after metadata loads", async () => {
     render(<Home />);
 
     expect(
-      screen.getByRole("heading", { name: /tone\.js test player/i }),
+      screen.getByRole("heading", { name: /test player/i }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -55,7 +108,7 @@ describe("Home Tone.js test player", () => {
     expect(screen.getByText("0:00 / 2:05")).toBeInTheDocument();
   });
 
-  it("loads a pasted audio URL into the existing player", async () => {
+  it("loads a pasted audio URL into the media element", async () => {
     const user = userEvent.setup();
     render(<Home />);
 
@@ -68,8 +121,9 @@ describe("Home Tone.js test player", () => {
     await user.type(screen.getByLabelText(/audio url/i), nextUrl);
     await user.click(screen.getByRole("button", { name: /load url/i }));
 
-    expect(mockPlayer.stop).toHaveBeenCalled();
-    expect(mockPlayer.buffer.load).toHaveBeenCalledWith(nextUrl);
+    expect(mockAudio.pause).toHaveBeenCalled();
+    expect(mockAudio.src).toBe(nextUrl);
+    expect(mockAudio.load).toHaveBeenCalled();
     expect(await screen.findByText(nextUrl)).toBeInTheDocument();
     expect(screen.getByText("Ready")).toBeInTheDocument();
   });
@@ -89,7 +143,7 @@ describe("Home Tone.js test player", () => {
     await user.type(screen.getByLabelText(/audio url/i), blobUrl);
     await user.click(screen.getByRole("button", { name: /load url/i }));
 
-    expect(mockPlayer.buffer.load).toHaveBeenCalledWith(rawUrl);
+    expect(mockAudio.src).toBe(rawUrl);
     expect(await screen.findByDisplayValue(rawUrl)).toBeInTheDocument();
   });
 
@@ -100,30 +154,30 @@ describe("Home Tone.js test player", () => {
     await screen.findByText("Ready");
     await user.click(screen.getByRole("button", { name: /play/i }));
 
-    expect(mockPlayer.start).toHaveBeenCalledWith(undefined, 0);
+    expect(mockAudio.play).toHaveBeenCalled();
     expect(screen.getByText("Playing")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /pause/i }));
-    expect(mockPlayer.stop).toHaveBeenCalled();
+    expect(mockAudio.pause).toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: /stop/i }));
+    expect(mockAudio.currentTime).toBe(0);
     expect(screen.getByText("Ready")).toBeInTheDocument();
   });
 
-  it("restarts from a committed seek position while playing", async () => {
+  it("seeks directly with the media element instead of restarting a buffer source", async () => {
     const user = userEvent.setup();
     render(<Home />);
 
     await screen.findByText("Ready");
     await user.click(screen.getByRole("button", { name: /play/i }));
 
-    const playback = screen.getByLabelText(/playback/i);
+    fireEvent.change(screen.getByLabelText(/playback/i), {
+      target: { value: "80" },
+    });
 
-    fireEvent.change(playback, { target: { value: "80" } });
-    expect(mockPlayer.restart).not.toHaveBeenCalled();
-
-    fireEvent.mouseUp(playback, { currentTarget: { value: "80" } });
-    expect(mockPlayer.restart).toHaveBeenCalledWith(undefined, 80);
+    expect(mockAudio.currentTime).toBe(80);
+    expect(screen.getByText("1:20 / 2:05")).toBeInTheDocument();
   });
 
   it("updates speed and pitch controls", async () => {
@@ -133,14 +187,13 @@ describe("Home Tone.js test player", () => {
     await screen.findByText("Ready");
     await user.click(screen.getByRole("button", { name: "1.5x" }));
     expect(screen.getAllByText("1.5x")).toHaveLength(2);
-    expect(mockPlayer.playbackRate).toBe(1.5);
-    expect(mockPlayer.detune).toBe(0);
+    expect(mockAudio.playbackRate).toBe(1.5);
 
     fireEvent.change(screen.getByLabelText(/pitch/i), {
       target: { value: "4" },
     });
 
     expect(screen.getByText("+4 semitones")).toBeInTheDocument();
-    expect(mockPlayer.detune).toBe(400);
+    expect(mockPitchShift.pitch).toBe(4);
   });
 });
